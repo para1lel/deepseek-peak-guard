@@ -1,0 +1,34 @@
+{
+  "name": "deepseek-peak-guard",
+  "version": "1.0.0",
+  "description": "DeepSeek peak-hour guard for magpie: switches the DeepSeek Official provider off when DeepSeek's peak pricing starts and back on when it ends.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "bin": {
+    "deepseek-peak-guard": "bin/deepseek-peak-guard.mjs"
+  },
+  "files": [
+    "index.js",
+    "bin/",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "magpie-plugin",
+    "magpie",
+    "deepseek",
+    "pricing",
+    "routing"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}
