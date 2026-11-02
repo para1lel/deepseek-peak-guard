@@ -35,7 +35,7 @@ Mon..Fri   09:00  12:00  14:00  18:00
 
 | 文件 | 作用 |
 | --- | --- |
-| `cli.txt` | 两行：解释器路径、CLI 脚本路径。调度器的 shim 每次运行都读它 |
+| `cli.txt` | 两行：解释器路径、CLI 脚本路径。调度器的 shim 每次运行都读它。`install-schedule` 优先选系统 node（`/usr/bin/node`、`/usr/local/bin/node`、`C:\Program Files\nodejs\node.exe`），免得 nvm 或 magpie 自带的 bun 换版本后 path 失效 |
 | `run-hidden.vbs` / `tick.sh` | 调度器真正启动的东西：读 `cli.txt`，静默 exec |
 | `state.json` | 最近 20 次 tick 的动作和历史 |
 | `logs/guard.log` | 每次 tick 一行；切换时多一行 magpie 的回复 |

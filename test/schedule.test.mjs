@@ -16,6 +16,7 @@ const {
   WINDOWS_SHIM,
   cliPath,
   ensureLauncher,
+  interpreter,
   posixShim,
   serviceContent,
   timerContent,
@@ -65,15 +66,44 @@ test("the Windows shim starts the interpreter with window style 0", () => {
 });
 
 test("ensureLauncher writes cli.txt and the shim, then leaves them alone", () => {
-  const first = ensureLauncher({ interp: "/usr/bin/node", cli: "/plugins/deepseek-peak-guard/bin/x.mjs" });
+  const cli = path.join(process.env.DEEPSEEK_PEAK_GUARD_HOME, "fake-cli.mjs");
+  fs.writeFileSync(cli, "// stand-in for the plugin's CLI\n");
+
+  const first = ensureLauncher({ interp: process.execPath, cli });
   assert.ok(first.wrote.includes(first.cliFile));
-  assert.equal(fs.readFileSync(path.join(path.dirname(first.cliFile), CLI_FILE), "utf8"), "/usr/bin/node\n/plugins/deepseek-peak-guard/bin/x.mjs\n");
+  assert.equal(fs.readFileSync(first.cliFile, "utf8"), `${process.execPath}\n${cli}\n`);
 
   const shim = path.join(path.dirname(first.cliFile), process.platform === "win32" ? WINDOWS_SHIM : POSIX_SHIM);
   assert.ok(fs.existsSync(shim));
 
-  const second = ensureLauncher({ interp: "/usr/bin/node", cli: "/plugins/deepseek-peak-guard/bin/x.mjs" });
+  const second = ensureLauncher({ interp: process.execPath, cli });
   assert.deepEqual(second.wrote, [], "a second visit rewrites nothing");
+});
+
+test("a load repairs a launcher whose script has moved", () => {
+  const cli = path.join(process.env.DEEPSEEK_PEAK_GUARD_HOME, "moved-cli.mjs");
+  fs.writeFileSync(cli, "// the plugin came back somewhere else\n");
+  const file = path.join(process.env.DEEPSEEK_PEAK_GUARD_HOME, CLI_FILE);
+  fs.writeFileSync(file, `${process.execPath}\n/nowhere/old-cli.mjs\n`);
+
+  const repaired = ensureLauncher({ interp: process.execPath, cli });
+  assert.ok(repaired.wrote.includes(repaired.cliFile));
+  assert.equal(fs.readFileSync(file, "utf8"), `${process.execPath}\n${cli}\n`);
+});
+
+test("install forces its own interpreter over whatever is recorded", () => {
+  const cli = path.join(process.env.DEEPSEEK_PEAK_GUARD_HOME, "forced-cli.mjs");
+  fs.writeFileSync(cli, "// forced\n");
+  const file = path.join(process.env.DEEPSEEK_PEAK_GUARD_HOME, CLI_FILE);
+  fs.writeFileSync(file, `${process.execPath}\n${cli}\n`);
+
+  const forced = ensureLauncher({ interp: "/opt/other-node", cli, force: true });
+  assert.ok(forced.wrote.includes(forced.cliFile));
+  assert.equal(fs.readFileSync(file, "utf8"), "/opt/other-node\n" + cli + "\n");
+});
+
+test("the interpreter is a file that exists", () => {
+  assert.ok(fs.statSync(interpreter()).isFile());
 });
 
 test("the CLI path is this plugin's own command", () => {
