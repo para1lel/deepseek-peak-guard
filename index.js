@@ -32,6 +32,9 @@ export function armInBackground({ config = loadConfig(), force = false } = {}) {
       cwd: path.dirname(cliPath()),
       env: { ...process.env },
     });
+    // a spawn that fails must not take the plugin host down with it: magpie
+    // would wait out its 20 seconds and report the plugin as not loaded
+    child.on("error", (error) => logLine(`arming the next boundary could not start: ${String(error?.message ?? error)}`));
     child.unref();
     return { started: true, pid: child.pid ?? null };
   } catch (error) {
