@@ -9,6 +9,7 @@
 import { loadConfig, logLine, stateDir } from "./lib/config.mjs";
 import { statusReport, tick } from "./lib/guard.mjs";
 import { describe } from "./lib/peak.mjs";
+import { takeLease } from "./lib/owner.mjs";
 
 let timer = null;
 let started = false;
@@ -17,6 +18,7 @@ let running = false;
 /** runOnce is one tick, with the loop's own guard against overlapping ticks. */
 export async function runOnce({ config = loadConfig(), echo = false } = {}) {
   if (running) return { skipped: true, reason: "a tick is still running" };
+  if (!takeLease(config.tickSeconds)) return { skipped: true, reason: "another host holds the clock" };
   running = true;
   try {
     const report = await tick({ config, echo });
@@ -33,17 +35,20 @@ export async function runOnce({ config = loadConfig(), echo = false } = {}) {
 export function startScheduler({ config = loadConfig(), echo = false } = {}) {
   if (started) return { started: false, reason: "already started" };
   started = true;
+  const clock = describe(new Date(), config);
+  const holdsClock = takeLease(config.tickSeconds);
   runOnce({ config, echo }).catch((error) => logLine(`the first tick failed: ${String(error)}`));
   timer = setInterval(() => {
     runOnce({ config, echo }).catch((error) => logLine(`a tick failed: ${String(error)}`));
   }, Math.max(5, config.tickSeconds) * 1000);
   timer.unref?.();
-  const clock = describe(new Date(), config);
   logLine(
-    `deepseek-peak-guard started (pid ${process.pid}): ${config.provider} ${clock.peak ? "off" : "on"} now, ` +
-      `peak ${config.windows.join(" and ")} ${config.timezone} on weekdays ${config.weekdays.join(",")}`,
+    holdsClock
+      ? `deepseek-peak-guard started (pid ${process.pid}): ${config.provider} ${clock.peak ? "off" : "on"} now, ` +
+          `peak ${config.windows.join(" and ")} ${config.timezone} on weekdays ${config.weekdays.join(",")}`
+      : `deepseek-peak-guard loaded (pid ${process.pid}): another host holds the clock, this one stands by`,
   );
-  return { started: true, clock };
+  return { started: true, clock, holdsClock };
 }
 
 export function stopScheduler() {

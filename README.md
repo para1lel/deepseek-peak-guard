@@ -19,6 +19,7 @@ DeepSeek 官方文档的口径（UTC）：**每周一到周五 01:00–04:00、0
 ## 它怎么工作
 
 - 插件宿主（magpie 进程里的 bun host）每 `tickSeconds`（默认 30 秒）看一次时钟，并顺手对齐一次状态；宿主重启、magpie 重启、插件更新后都会重新开始。
+- magpie 可能同时加载多份插件宿主，所以用 `owner.json` 的租约只让一个进程看钟，其余待命；持有者停写心跳后，下一个 tick 由别的宿主接手。
 - 只改 magpie 自己的开关：所有动作都走 `magpie provider off|on <id>`，不写 magpie 的任何文件。
 - 每次动作都记日志：`~/.config/magpie/deepseek-peak-guard/logs/guard.log`，状态在 `state.json`。
 - 幂等：已经到了该在的状态就不调用任何切换命令。
