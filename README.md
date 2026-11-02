@@ -18,11 +18,11 @@ DeepSeek 官方文档的口径（UTC）：**每周一到周五 01:00–04:00、0
 
 ## 它怎么工作
 
-- 插件宿主（magpie 进程里的 bun host）每 `tickSeconds`（默认 30 秒）看一次时钟，并顺手对齐一次状态；宿主重启、magpie 重启、插件更新后都会重新开始。
-- magpie 可能同时加载多份插件宿主，所以用 `owner.json` 的租约只让一个进程看钟，其余待命；持有者停写心跳后，下一个 tick 由别的宿主接手。
+- 时钟挂在**操作系统自己的定时器**上：Linux 是 `systemd --user` 的 `deepseek-peak-guard.timer`（每分钟一次），Windows 是计划任务 `DeepSeekPeakGuard`（每分钟一次）。插件每次被 magpie 加载时会顺手确认一遍这个定时器还在，不在就装上。
+- 为什么不用插件宿主里的 `setInterval`：magpie 装载插件的那次宿主进程很短命，进程一走定时器就没了（这也是这个插件第一版踩过的坑）。宿主里仍然保留一个 30 秒的循环，只在宿主还活着的时候当快路。
 - 只改 magpie 自己的开关：所有动作都走 `magpie provider off|on <id>`，不写 magpie 的任何文件。
 - 每次动作都记日志：`~/.config/magpie/deepseek-peak-guard/logs/guard.log`，状态在 `state.json`。
-- 幂等：已经到了该在的状态就不调用任何切换命令。
+- 幂等：已经到了该在的状态就不调用任何切换命令；多个宿主同时加载时，`owner.json` 的租约保证只有一个在跑这一分钟。
 
 ## 装上
 
@@ -65,7 +65,10 @@ node bin/deepseek-peak-guard.mjs status          # 现在是不是峰值、下�
 node bin/deepseek-peak-guard.mjs status --json
 node bin/deepseek-peak-guard.mjs tick            # 立刻按规则对齐一次
 node bin/deepseek-peak-guard.mjs tick --now 2026-11-03T09:05:00+08:00   # 按指定时间演练
-node bin/deepseek-peak-guard.mjs schedule        # 在前台常驻（不给插件宿主用）
+node bin/deepseek-peak-guard.mjs schedule        # 在前台常驻（调试用）
+node bin/deepseek-peak-guard.mjs install-schedule     # 装/修 OS 定时器
+node bin/deepseek-peak-guard.mjs schedule-status      # 定时器现在在不在
+node bin/deepseek-peak-guard.mjs uninstall-schedule   # 卸掉
 node bin/deepseek-peak-guard.mjs config          # 看当前配置和状态目录
 ```
 
