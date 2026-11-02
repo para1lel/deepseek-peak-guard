@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-// The guard from a shell, for the times a plugin host is not running: a
-// systemd timer, a container's cron, or a person checking what it would do.
+// The guard from a shell, which is how the OS scheduler runs it, and how a
+// person checks what it would do.
 //
 //   deepseek-peak-guard status [--json] [--now 2026-11-03T09:05:00+08:00]
-//   deepseek-peak-guard tick   [--now …]     apply the rule, arm the next boundary
-//   deepseek-peak-guard sync   [--now …]     the same, named for what it does
-//   deepseek-peak-guard install-schedule     put the next boundary on the OS scheduler
+//   deepseek-peak-guard tick   [--now …] [--dry-run] [--json]
+//   deepseek-peak-guard install-schedule [--no-converge] [--json]
 //   deepseek-peak-guard uninstall-schedule
-//   deepseek-peak-guard schedule-status
+//   deepseek-peak-guard schedule-status [--json]
 //   deepseek-peak-guard config [--json]
 
-import { loadConfig, DEFAULT_CONFIG, stateDir } from "../lib/config.mjs";
+import { DEFAULT_CONFIG, loadConfig, stateDir } from "../lib/config.mjs";
 import { statusReport, tick } from "../lib/guard.mjs";
-import { parseWindows } from "../lib/peak.mjs";
-import { arm, disarm, scheduleState } from "../lib/schedule.mjs";
+import { describeSchedule } from "../lib/calendar.mjs";
+import { install, status as scheduleStatus, uninstall } from "../lib/schedule.mjs";
+import { tryLock } from "../lib/lock.mjs";
 
 const argv = process.argv.slice(2);
 const command = argv[0] ?? "status";
@@ -27,7 +27,7 @@ function valueOf(name) {
   return index >= 0 ? argv[index + 1] : undefined;
 }
 
-function now() {
+function at() {
   const given = valueOf("now");
   if (!given) return new Date();
   const parsed = new Date(given);
@@ -35,65 +35,138 @@ function now() {
   return parsed;
 }
 
+function settings() {
+  return loadConfig(flag("dry-run") ? { dryRun: true } : {});
+}
+
 function printClock(clock, provider, wanted) {
   const next = clock.next;
-  const lines = [
-    `provider  ${provider}`,
-    `now       ${clock.local} (${clock.timezone}, weekday ${clock.weekday}${clock.holiday ? ", holiday" : ""})`,
-    `peak      ${clock.peak ? "yes" : "no"} — its models ${wanted}`,
-    `windows   ${clock.windows.join("  ")}`,
-    next
-      ? `next      ${new Date(next.at).toISOString()} — peak ${next.peak ? "starts" : "ends"} in ${next.inMinutes} min`
-      : "next      nothing within 8 days",
-  ];
-  console.log(lines.join("\n"));
+  console.log(
+    [
+      `provider  ${provider}`,
+      `now       ${clock.local} (${clock.timezone}, weekday ${clock.weekday}${clock.holiday ? ", holiday" : ""})`,
+      `peak      ${clock.peak ? "yes" : "no"} — its models ${wanted}`,
+      `windows   ${clock.windows.join("  ")}`,
+      next
+        ? `next      ${new Date(next.at).toISOString()} — peak ${next.peak ? "starts" : "ends"} in ${next.inMinutes} min`
+        : "next      nothing within 8 days",
+    ].join("\n"),
+  );
+}
+
+function printSchedule(schedule) {
+  const where = schedule.scheduler === "schtasks" ? `task ${schedule.task}` : `timer ${schedule.timer}`;
+  if (!schedule.present) {
+    console.log(`schedule  missing — run install-schedule`);
+    return;
+  }
+  const runs = schedule.expected?.length ?? 0;
+  console.log(`schedule  ${where}: ${runs} run${runs === 1 ? "" : "s"} per weekday`);
+  if (schedule.summary) console.log(`runs at   ${schedule.summary}`);
+  if (schedule.next) console.log(`next      ${schedule.next}`);
+  console.log(`matches   ${schedule.match ? "yes" : "no — the config and the installed schedule differ, run install-schedule"}`);
+  if (schedule.error) console.log(`error     ${schedule.error}`);
+}
+
+function printReport(report) {
+  console.log(
+    [
+      `at        ${report.local} (${report.at})`,
+      `peak      ${report.peak ? "yes" : "no"}${report.dryRun ? " (dry run)" : ""}`,
+      `provider  ${report.provider}: ${report.before} → ${report.after ?? report.before}${
+        report.verified === false ? " (not confirmed by providers.json)" : ""
+      }`,
+      `action    ${report.action}${report.reason ? ` — ${report.reason}` : ""}`,
+    ].join("\n"),
+  );
+}
+
+async function withLock(work) {
+  const lock = tryLock();
+  if (lock.error) {
+    console.error(`deepseek-peak-guard: cannot take the lock: ${lock.error}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!lock.held) {
+    console.log("another tick is running; this one does nothing");
+    return;
+  }
+  try {
+    await work();
+  } finally {
+    lock.release();
+  }
 }
 
 async function main() {
-  const config = loadConfig();
+  const config = settings();
 
   if (command === "status") {
-    const report = statusReport({ config, now: now() });
+    const report = statusReport({ config, now: at() });
     if (flag("json")) {
-      console.log(JSON.stringify(report, null, 2));
+      console.log(JSON.stringify({ ...report, schedule: scheduleStatus({ config }), stateDir: stateDir() }, null, 2));
       return;
     }
     printClock(report.clock, report.provider, report.wanted);
-    console.log(`state     ${report.state.switchedOff ? "switched off by the guard" : "left on"}`);
-    if (report.state.offAt) console.log(`off since ${report.state.offAt}`);
-    if (report.state.onAt) console.log(`on since  ${report.state.onAt}`);
-    const scheduler = scheduleState();
-    console.log(
-      scheduler.scheduler === "none"
-        ? "schedule  none on this platform"
-        : `schedule  ${scheduler.scheduler} ${scheduler.present ? "armed" : "missing"}${scheduler.next ? ` · next ${scheduler.next}` : ""}`,
-    );
+    const current =
+      report.current.found === false
+        ? `unknown — ${report.current.note}`
+        : report.current.off
+          ? "off"
+          : "on";
+    console.log(`switch    ${current}  (${report.current.file ?? "no providers.json"})`);
+    if (report.state.lastTick) console.log(`last tick ${report.state.lastTick} (${report.state.lastAction})`);
+    printSchedule(scheduleStatus({ config }));
     return;
   }
 
   if (command === "tick" || command === "sync") {
-    const report = await tick({ config, now: now(), echo: true });
-    // this run was the boundary: put the next one on the scheduler
-    const armed = arm({ now: now(), config });
-    if (flag("json")) console.log(JSON.stringify({ ...report, armed }, null, 2));
-    else console.log(`${report.action}: ${report.reason} (${report.before} → ${report.after}) · next ${armed.boundary ?? armed.at}`);
-    return process.exitCode = report.action === "error" ? 1 : 0;
+    await withLock(async () => {
+      const report = await tick({ config, now: at() });
+      if (flag("json")) console.log(JSON.stringify(report, null, 2));
+      else printReport(report);
+      process.exitCode = report.action === "error" ? 1 : 0;
+    });
+    return;
   }
 
   if (command === "install-schedule") {
-    const result = arm({ now: now(), config });
-    console.log(JSON.stringify(result, null, 2));
-    return process.exitCode = result.error ? 1 : 0;
+    const installed = install({ config });
+    const report = flag("no-converge") ? null : await tick({ config });
+    const schedule = scheduleStatus({ config });
+    if (flag("json")) {
+      console.log(JSON.stringify({ installed, tick: report, schedule }, null, 2));
+    } else {
+      console.log(
+        installed.error
+          ? `install   failed — ${installed.error}`
+          : `install   ${installed.scheduler} ${installed.scheduler === "systemd" ? installed.timer : installed.task}: ${
+              schedule.match ? "ok" : "written, but it does not read back as expected"
+            }`,
+      );
+      console.log(`runs at   ${installed.summary}`);
+      if (schedule.next) console.log(`next      ${schedule.next}`);
+      if (report) printReport(report);
+    }
+    process.exitCode = installed.error ? 1 : 0;
+    return;
   }
 
   if (command === "uninstall-schedule") {
-    const result = disarm();
+    const result = uninstall();
     console.log(JSON.stringify(result, null, 2));
-    return process.exitCode = result.removed ? 0 : 1;
+    process.exitCode = result.error ? 1 : 0;
+    return;
   }
 
   if (command === "schedule-status") {
-    console.log(JSON.stringify(scheduleState(), null, 2));
+    const schedule = scheduleStatus({ config });
+    if (flag("json")) {
+      console.log(JSON.stringify(schedule, null, 2));
+      return;
+    }
+    printSchedule(schedule);
     return;
   }
 
@@ -104,15 +177,15 @@ async function main() {
       return;
     }
     console.log(`state dir ${stateDir()}`);
+    console.log(`runs at   ${describeSchedule(current)}`);
     for (const [key, value] of Object.entries(current)) {
       console.log(`  ${key.padEnd(16)} ${Array.isArray(value) ? value.join(", ") : value}`);
     }
-    parseWindows(config.windows);
     return;
   }
 
   console.error(`unknown command: ${command}`);
-  console.error("use: status | tick | sync | schedule | config");
+  console.error("use: status | tick | install-schedule | uninstall-schedule | schedule-status | config");
   process.exitCode = 2;
 }
 

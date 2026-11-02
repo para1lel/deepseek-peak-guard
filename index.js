@@ -1,78 +1,59 @@
 // magpie's plugin entry.
 //
-// The plugin has no clock of its own: a plugin host is started to load a
-// plugin and let go again, so a timer inside one stops with the process. The
-// guard's next run is put on the operating system's scheduler at the exact
-// price boundary instead, and each run puts the one after it there. Between
-// boundaries nothing runs at all.
-//
-// Loading must stay quick: magpie gives a plugin 20 seconds to load, and
-// arming runs PowerShell (Windows) or systemctl (Linux), which can be slow on
-// a cold machine. So the load starts the arming as its own process and returns.
+// There is no clock inside the plugin: a plugin host is started to load a
+// plugin and let go again, so an interval in one stops with the process. The
+// runs live on the operating system's scheduler instead, installed once by
+// `install-schedule`; loading only repairs the launcher, which is a text file
+// in the guard's state directory. Nothing here shells out, so loading stays
+// well inside magpie's 20 seconds.
 
-import { spawn } from "node:child_process";
-import path from "node:path";
-import { loadConfig, logLine, readJSON, stateDir, writeJSON } from "./lib/config.mjs";
+import { loadConfig, logLine, stateDir } from "./lib/config.mjs";
 import { statusReport, tick } from "./lib/guard.mjs";
-import { cliPath, scheduleState } from "./lib/schedule.mjs";
+import { ensureLauncher, install, status as scheduleStatus } from "./lib/schedule.mjs";
 
-const ARM_EVERY_MS = 10 * 60_000;
-
-/** armInBackground starts `install-schedule` and does not wait for it. */
-export function armInBackground({ config = loadConfig(), force = false } = {}) {
+/** heal rewrites cli.txt and the shim when an update moved the plugin. */
+function heal() {
   try {
-    const marker = path.join(stateDir(), "armed-at.json");
-    const last = Number(readJSON(marker, {})?.at ?? 0);
-    if (!force && Date.now() - last < ARM_EVERY_MS) return { skipped: true, last };
-    writeJSON(marker, { at: Date.now(), pid: process.pid });
-    const child = spawn(process.execPath, [cliPath(), "install-schedule"], {
-      detached: true,
-      stdio: "ignore",
-      windowsHide: true,
-      cwd: path.dirname(cliPath()),
-      env: { ...process.env },
-    });
-    // a spawn that fails must not take the plugin host down with it: magpie
-    // would wait out its 20 seconds and report the plugin as not loaded
-    child.on("error", (error) => logLine(`arming the next boundary could not start: ${String(error?.message ?? error)}`));
-    child.unref();
-    return { started: true, pid: child.pid ?? null };
+    const launcher = ensureLauncher();
+    if (launcher.wrote.length) logLine(`launcher rewritten: ${launcher.wrote.join(", ")}`);
+    return launcher;
   } catch (error) {
-    logLine(`arming the next boundary could not be started: ${String(error?.message ?? error)}`);
-    return { error: String(error?.message ?? error) };
+    logLine(`the launcher could not be written: ${String(error?.message ?? error)}`);
+    return null;
   }
 }
 
-/** runOnce applies the rule now and arms the next boundary. */
-export async function runOnce({ config = loadConfig(), echo = false, arm = true } = {}) {
-  const report = await tick({ config, echo });
-  if (arm) report.next = armInBackground({ config, force: true });
-  return report;
-}
-
-export default async function deepseekPeakGuard(input, options) {
+export default async function deepseekPeakGuard() {
   const config = loadConfig();
-  // Loading stays free of side effects: magpie gives a plugin 20 seconds to
-  // load, and anything that shells out (PowerShell, systemctl) can outlast
-  // that on a cold machine. The boundary is armed by `tick` and
-  // `install-schedule`, and once armed every run re-arms the next one.
+  heal();
+
   return {
     tool: {
       deepseek_peak_status: {
         description:
-          "Report DeepSeek's peak-pricing clock as this computer sees it: whether the peak rate is running now, when it next changes, whether magpie's DeepSeek Official provider is switched off, and when the OS scheduler will run the guard next.",
+          "Report DeepSeek's peak-pricing clock as this computer sees it: whether the peak rate is running now, when it next changes, whether magpie's DeepSeek Official provider is switched off in providers.json, and whether the installation still holds the four weekday runs (09:00, 12:00, 14:00, 18:00).",
         args: { type: "object", properties: {}, required: [] },
         execute: async () => ({
           ...statusReport({ config }),
+          schedule: scheduleStatus({ config }),
           stateDir: stateDir(),
-          schedule: scheduleState(),
         }),
       },
       deepseek_peak_sync: {
         description:
-          "Apply the peak-pricing rule now instead of waiting for the boundary: switch DeepSeek Official off inside a peak window, on outside one, then arm the next boundary.",
+          "Apply the peak-pricing rule now instead of waiting for the next scheduled run: switch DeepSeek Official off inside a peak window, on outside one. Reads providers.json and calls magpie only when the switch has to move.",
         args: { type: "object", properties: {}, required: [] },
-        execute: async () => runOnce({ config }),
+        execute: async () => tick({ config }),
+      },
+      deepseek_peak_install: {
+        description:
+          "Install (or repair) the guard's schedule on this computer: one systemd --user timer or one Windows task that runs the guard at the four DeepSeek price boundaries, weekdays only. Safe to run again; it never re-arms itself afterwards.",
+        args: { type: "object", properties: {}, required: [] },
+        execute: async () => {
+          const installed = install({ config });
+          const report = await tick({ config });
+          return { installed, tick: report };
+        },
       },
     },
   };
