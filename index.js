@@ -10,6 +10,7 @@ import { loadConfig, logLine, stateDir } from "./lib/config.mjs";
 import { statusReport, tick } from "./lib/guard.mjs";
 import { describe } from "./lib/peak.mjs";
 import { takeLease } from "./lib/owner.mjs";
+import { ensureScheduleQuietly, scheduleState } from "./lib/schedule.mjs";
 
 let timer = null;
 let started = false;
@@ -59,14 +60,17 @@ export function stopScheduler() {
 
 export default async function deepseekPeakGuard(input, options) {
   const config = loadConfig();
+  // the host this runs in is short-lived, so the clock goes on the OS scheduler
+  // as well; the in-host interval is only the fast path while a host is up
+  const schedule = ensureScheduleQuietly({ tickSeconds: config.tickSeconds });
   startScheduler({ config });
   return {
     tool: {
       deepseek_peak_status: {
         description:
-          "Report DeepSeek's peak-pricing clock as this computer sees it: whether the peak rate is running now, when it next changes, and whether magpie's DeepSeek Official provider is switched off.",
+          "Report DeepSeek's peak-pricing clock as this computer sees it: whether the peak rate is running now, when it next changes, whether magpie's DeepSeek Official provider is switched off, and whether the OS scheduler is ticking the guard.",
         args: { type: "object", properties: {}, required: [] },
-        execute: async () => ({ ...statusReport({ config }), stateDir: stateDir() }),
+        execute: async () => ({ ...statusReport({ config }), stateDir: stateDir(), schedule: scheduleState() }),
       },
       deepseek_peak_sync: {
         description:

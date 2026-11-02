@@ -11,6 +11,7 @@
 import { loadConfig, saveConfig, DEFAULT_CONFIG, stateDir, logLine } from "../lib/config.mjs";
 import { statusReport, tick } from "../lib/guard.mjs";
 import { parseWindows } from "../lib/peak.mjs";
+import { ensureSchedule, removeSchedule, scheduleState } from "../lib/schedule.mjs";
 
 const argv = process.argv.slice(2);
 const command = argv[0] ?? "status";
@@ -59,6 +60,12 @@ async function main() {
     console.log(`state     ${report.state.switchedOff ? "switched off by the guard" : "left on"}`);
     if (report.state.offAt) console.log(`off since ${report.state.offAt}`);
     if (report.state.onAt) console.log(`on since  ${report.state.onAt}`);
+    const scheduler = scheduleState();
+    console.log(
+      scheduler.scheduler === "none"
+        ? "schedule  none on this platform"
+        : `schedule  ${scheduler.scheduler} ${scheduler.present ? (scheduler.active === false ? "present, not running" : "present") : "missing"}`,
+    );
     return;
   }
 
@@ -84,6 +91,23 @@ async function main() {
     };
     await once();
     setInterval(once, Math.max(5, config.tickSeconds) * 1000);
+    return;
+  }
+
+  if (command === "install-schedule") {
+    const result = ensureSchedule({ tickSeconds: config.tickSeconds });
+    console.log(JSON.stringify(result, null, 2));
+    return process.exitCode = result.installed ? 0 : 1;
+  }
+
+  if (command === "uninstall-schedule") {
+    const result = removeSchedule();
+    console.log(JSON.stringify(result, null, 2));
+    return process.exitCode = result.removed ? 0 : 1;
+  }
+
+  if (command === "schedule-status") {
+    console.log(JSON.stringify(scheduleState(), null, 2));
     return;
   }
 
