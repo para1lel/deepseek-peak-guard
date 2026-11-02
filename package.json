@@ -1,6 +1,6 @@
 {
   "name": "deepseek-peak-guard",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "DeepSeek peak-hour guard for magpie: switches the DeepSeek Official provider off when DeepSeek's peak pricing starts and back on when it ends.",
   "type": "module",
   "main": "index.js",

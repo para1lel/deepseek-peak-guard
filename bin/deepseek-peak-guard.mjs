@@ -3,15 +3,17 @@
 // systemd timer, a container's cron, or a person checking what it would do.
 //
 //   deepseek-peak-guard status [--json] [--now 2026-11-03T09:05:00+08:00]
-//   deepseek-peak-guard tick   [--now …]     look once, switch if needed
+//   deepseek-peak-guard tick   [--now …]     apply the rule, arm the next boundary
 //   deepseek-peak-guard sync   [--now …]     the same, named for what it does
-//   deepseek-peak-guard schedule             keep looking, in this process
+//   deepseek-peak-guard install-schedule     put the next boundary on the OS scheduler
+//   deepseek-peak-guard uninstall-schedule
+//   deepseek-peak-guard schedule-status
 //   deepseek-peak-guard config [--json]
 
-import { loadConfig, saveConfig, DEFAULT_CONFIG, stateDir, logLine } from "../lib/config.mjs";
+import { loadConfig, DEFAULT_CONFIG, stateDir } from "../lib/config.mjs";
 import { statusReport, tick } from "../lib/guard.mjs";
 import { parseWindows } from "../lib/peak.mjs";
-import { ensureSchedule, removeSchedule, scheduleState } from "../lib/schedule.mjs";
+import { arm, disarm, scheduleState } from "../lib/schedule.mjs";
 
 const argv = process.argv.slice(2);
 const command = argv[0] ?? "status";
@@ -64,44 +66,28 @@ async function main() {
     console.log(
       scheduler.scheduler === "none"
         ? "schedule  none on this platform"
-        : `schedule  ${scheduler.scheduler} ${scheduler.present ? (scheduler.active === false ? "present, not running" : "present") : "missing"}`,
+        : `schedule  ${scheduler.scheduler} ${scheduler.present ? "armed" : "missing"}${scheduler.next ? ` · next ${scheduler.next}` : ""}`,
     );
     return;
   }
 
   if (command === "tick" || command === "sync") {
     const report = await tick({ config, now: now(), echo: true });
-    if (flag("json")) console.log(JSON.stringify(report, null, 2));
-    else console.log(`${report.action}: ${report.reason} (${report.before} → ${report.after})`);
+    // this run was the boundary: put the next one on the scheduler
+    const armed = arm({ now: now(), config });
+    if (flag("json")) console.log(JSON.stringify({ ...report, armed }, null, 2));
+    else console.log(`${report.action}: ${report.reason} (${report.before} → ${report.after}) · next ${armed.boundary ?? armed.at}`);
     return process.exitCode = report.action === "error" ? 1 : 0;
   }
 
-  if (command === "schedule") {
-    let running = false;
-    const once = async () => {
-      if (running) return;
-      running = true;
-      try {
-        await tick({ config, echo: true });
-      } catch (error) {
-        logLine(`a tick failed: ${String(error)}`, { echo: true });
-      } finally {
-        running = false;
-      }
-    };
-    await once();
-    setInterval(once, Math.max(5, config.tickSeconds) * 1000);
-    return;
-  }
-
   if (command === "install-schedule") {
-    const result = ensureSchedule({ tickSeconds: config.tickSeconds });
+    const result = arm({ now: now(), config });
     console.log(JSON.stringify(result, null, 2));
-    return process.exitCode = result.installed ? 0 : 1;
+    return process.exitCode = result.error ? 1 : 0;
   }
 
   if (command === "uninstall-schedule") {
-    const result = removeSchedule();
+    const result = disarm();
     console.log(JSON.stringify(result, null, 2));
     return process.exitCode = result.removed ? 0 : 1;
   }
