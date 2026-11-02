@@ -52,8 +52,10 @@ export async function runOnce({ config = loadConfig(), echo = false, arm = true 
 
 export default async function deepseekPeakGuard(input, options) {
   const config = loadConfig();
-  // one action per price change, not a poll: ask the OS scheduler for the next one
-  const arming = armInBackground({ config });
+  // Loading stays free of side effects: magpie gives a plugin 20 seconds to
+  // load, and anything that shells out (PowerShell, systemctl) can outlast
+  // that on a cold machine. The boundary is armed by `tick` and
+  // `install-schedule`, and once armed every run re-arms the next one.
   return {
     tool: {
       deepseek_peak_status: {
@@ -64,7 +66,6 @@ export default async function deepseekPeakGuard(input, options) {
           ...statusReport({ config }),
           stateDir: stateDir(),
           schedule: scheduleState(),
-          arming,
         }),
       },
       deepseek_peak_sync: {
